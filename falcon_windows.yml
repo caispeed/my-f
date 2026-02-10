@@ -1,0 +1,25 @@
+name: falcon
+channels:
+  - pytorch
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10
+  - pip
+  - numpy
+  - pandas
+  - scikit-learn
+  - matplotlib
+  - seaborn
+  - networkx
+  - tqdm
+  - jupyter
+  - pytorch=2.5.1
+  - torchvision=0.20.1
+  - torchaudio=2.5.1
+  - pip:
+    - torch-geometric==2.6.1
+    - torch-scatter==2.1.2
+    - torch-sparse==0.6.18
+    - torch-cluster==1.6.3
+    - torch-spline-conv==1.2.2
