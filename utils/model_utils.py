@@ -3,6 +3,7 @@ from torch_geometric.loader import DataLoader
 import numpy as np
 
 from models.circuit_gnn import CircuitGNN  # adjust path
+from torch_scatter.testing import devices
 from utils.io_tools import load_yaml
 
 
@@ -23,7 +24,7 @@ def load_model(device, perf_dim=16):
     # Load trained model
     param_templates = load_yaml('./dataset/param_templates.yaml')
     str_params_templates = load_yaml('./dataset/str_params_templates.yaml')
-    hidden_dim = 128
+    hidden_dim = 256
 
     model = CircuitGNN(
     hidden_dim=hidden_dim,
@@ -31,7 +32,7 @@ def load_model(device, perf_dim=16):
     param_templates=param_templates,
     str_params_templates=str_params_templates
     ).to(device)
-    model.load_state_dict(torch.load("./checkpoints/best_gnn_model.pt", map_location="cpu", weights_only=True))
+    model.load_state_dict(torch.load("./checkpoints/best_gnn_model.pt", map_location=device, weights_only=True))
     model.eval()
 
     return model
