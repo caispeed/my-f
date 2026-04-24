@@ -53,62 +53,55 @@ class EdgeEncoder(nn.Module):
         self.out_dim = out_dim  # 保存维度供后续使用
 
     def forward(self, edge_features):
-        # 1. 获取当前模型所在的设备 (动态获取，拒绝硬编码 'cpu')
         device = next(self.parameters()).device
-        num_edges = len(edge_features)
 
-        # 2. 一次性生成离散特征 IDs 并移动到正确设备
-        type_ids = torch.tensor([element_to_idx.get(e['type'], 0) for e in edge_features], dtype=torch.long,
-                                device=device)
+        # 1. 编码元件类型和端口类型
+        type_ids = torch.tensor([element_to_idx.get(e['type'], 0) for e in edge_features], device=device)
         source_ids = torch.tensor(
             [self.source_to_idx.get(e['source_type'], 0) if e['source_type'] else 0 for e in edge_features],
-            dtype=torch.long, device=device)
+            device=device)
 
         type_emb = self.type_embed(type_ids)
         source_emb = self.source_embed(source_ids)
 
-        # ==========================================================
-        #  矩阵批处理 (Batched Vectorization)
-        # ==========================================================
-        # 预先分配一个致密的显存块，避免海量的小 tensor cat
-        param_vecs = torch.zeros((num_edges, self.out_dim), device=device)
+        param_vecs = []
+        # 2. 逐个处理元件参数
+        for e in edge_features:
+            comp_type = e['type']  # e.g., 'nmos_DG'
+            base_type = comp_type.split("_")[0]
+            params = e['params']
 
-        # 3a. 按基类 (base_type) 分组收集边缘索引和参数
-        type_groups = {}
-        for i, e in enumerate(edge_features):
-            base_type = e['type'].split("_")[0]
-            if base_type not in type_groups:
-                type_groups[base_type] = {'indices': [], 'params': []}
+            if not torch.is_tensor(params):
+                params = torch.tensor(params, dtype=torch.float32)
+            params = params.to(device)
 
-            type_groups[base_type]['indices'].append(i)
-
-            # 确保 params 是 tensor
-            p = e['params']
-            if not isinstance(p, torch.Tensor):
-                p = torch.tensor(p, dtype=torch.float32)
-            type_groups[base_type]['params'].append(p)
-
-        # 3b. 对每个分组进行一次性的批处理前向传播 (将几万次计算缩减为十几次矩阵乘法)
-        for base_type, group in type_groups.items():
-            indices = group['indices']
-            # 将同类别的所有边参数堆叠成一个形状为 [N, param_dim] 的大矩阵
-            batched_params = torch.stack(group['params']).to(device)
-
-            param_names = self.param_templates[base_type]
+            param_names = self.param_templates.get(base_type, [])
             scale_dict = SCALE_FACTORS.get(base_type, {})
 
-            # 创建缩放矩阵并执行向量化除法
-            scales = torch.tensor([scale_dict.get(name, 1.0) for name in param_names], dtype=torch.float32,
-                                  device=device)
-            scaled_params = batched_params / scales
+            # 【核心修复1】动态生成与模型预期参数严格一致的 scales 列表
+            scales = torch.tensor(
+                [scale_dict.get(p, 1.0) for p in param_names],
+                dtype=torch.float32,
+                device=device
+            )
 
-            out = self.param_mlps[base_type](scaled_params)
+            # 【核心修复2】暴力防越界对齐：Cadence导出7个，我只要前2个；不够的补1
+            if len(params) > len(scales):
+                params = params[:len(scales)]  # 截断多余的寄生脏参数
+            elif len(params) < len(scales):
+                padding = torch.ones(len(scales) - len(params), device=device)
+                params = torch.cat([params, padding], dim=0)  # 补齐缺失的参数
 
-            # 将计算结果按索引精准填回预分配的大矩阵
-            param_vecs[indices] = out
-        # ==========================================================
+            # 现在 7 vs 2 的问题被彻底解决，永远是等长的张量相除
+            scaled_params = params / scales
 
-        # 4. 最终拼接 (只需要拼接3个大矩阵，而不是几万个小矩阵)
-        concat = torch.cat([type_emb, source_emb, param_vecs], dim=-1)
+            mlp = self.param_mlps[base_type]
+            param_vecs.append(mlp(scaled_params.unsqueeze(0)))
 
-        return self.final(concat)
+        # 3. 拼接所有特征输出
+        if len(param_vecs) > 0:
+            param_vecs = torch.cat(param_vecs, dim=0)  # [num_edges, out_dim]
+            concat = torch.cat([type_emb, source_emb, param_vecs], dim=-1)
+            return self.final(concat)
+        else:
+            return None
